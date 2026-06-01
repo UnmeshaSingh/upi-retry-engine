@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from app.core.config import settings
+from app.core.redis_client import check_redis_connection
 from app.api.payments import router as payments_router
 
 app = FastAPI(
@@ -20,4 +21,8 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    redis_ok = check_redis_connection()
+    return {
+        "status": "healthy" if redis_ok else "degraded",
+        "redis": "connected" if redis_ok else "disconnected"
+    }
