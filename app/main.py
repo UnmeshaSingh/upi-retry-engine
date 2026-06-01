@@ -1,11 +1,14 @@
 from fastapi import FastAPI
 from app.core.config import settings
+from app.api.payments import router as payments_router
 
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="UPI-aware payment retry orchestration engine"
 )
+
+app.include_router(payments_router)
 
 @app.get("/")
 def root():
