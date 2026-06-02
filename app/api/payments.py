@@ -6,10 +6,14 @@ from app.models.payment import (
     UPI_ERROR_CLASS_MAP
 )
 from app.core.redis_client import get_redis
+from app.services.stream_service import (
+    push_to_stream,
+    read_stream_events,
+    get_stream_length
+)
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
-# Redis key pattern: payment:{payment_id}
 PAYMENT_KEY_PREFIX = "payment"
 PAYMENT_TTL_SECONDS = 86400  # 24 hours
 
@@ -21,17 +25,21 @@ def report_failed_payment(
 ):
     """
     Accepts a failed UPI payment event.
-    Classifies the error and stores it in Redis.
+    1. Stores it in Redis with TTL
+    2. Pushes it into Redis Stream for retry processing
     """
     error_class = UPI_ERROR_CLASS_MAP.get(event.upi_error_code)
 
-    # Store in Redis as JSON with 24hr TTL
+    # Store payment in Redis
     redis_key = f"{PAYMENT_KEY_PREFIX}:{event.payment_id}"
     redis.setex(
         redis_key,
         PAYMENT_TTL_SECONDS,
         event.model_dump_json()
     )
+
+    # Push to stream
+    stream_entry_id = push_to_stream(event)
 
     return PaymentEventResponse(
         payment_id=event.payment_id,
@@ -42,8 +50,24 @@ def report_failed_payment(
         merchant_name=event.merchant_name,
         retry_count=event.retry_count,
         failed_at=event.failed_at,
-        message=f"Payment stored in Redis. Error class: {error_class.value}. Retry orchestration pending."
+        message=f"Payment stored and queued in stream (entry: {stream_entry_id}). Error class: {error_class.value}."
     )
+
+
+@router.get("/stream/events")
+def get_stream_events(count: int = 10):
+    """
+    Read recent events from the payments stream.
+    Shows what the retry worker will process.
+    """
+    events = read_stream_events(count=count)
+    stream_len = get_stream_length()
+
+    return {
+        "total_events_in_stream": stream_len,
+        "fetched": len(events),
+        "events": events
+    }
 
 
 @router.get("/{payment_id}", response_model=PaymentEventResponse)
