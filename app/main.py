@@ -3,6 +3,7 @@ from app.core.config import settings
 from app.core.redis_client import check_redis_connection
 from app.api.payments import router as payments_router
 from app.api.retry import router as retry_router
+from app.api.routing import router as routing_router
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -12,6 +13,7 @@ app = FastAPI(
 
 app.include_router(payments_router)
 app.include_router(retry_router)
+app.include_router(routing_router)
 
 @app.get("/")
 def root():
