@@ -9,6 +9,10 @@ from app.models.payment import (
     PaymentStatus,
     UPI_ERROR_CLASS_MAP
 )
+from app.services.retry_scheduler import (
+    get_retry_delay,
+    get_max_retries,
+)
 
 # Setup logging
 logging.basicConfig(
@@ -23,7 +27,7 @@ PAYMENTS_STREAM  = "payments_stream"
 CONSUMER_GROUP   = "retry_workers"
 CONSUMER_NAME    = "worker_1"
 BATCH_SIZE       = 10
-BLOCK_MS         = 2000   # Wait up to 2 seconds for new events
+BLOCK_MS         = 2000
 
 
 def ensure_consumer_group(redis):
@@ -43,54 +47,27 @@ def ensure_consumer_group(redis):
 
 
 def decide_retry_strategy(error_class: str) -> dict:
-    strategies = {
-        ErrorClass.REMITTER_BANK_DOWN.value: {
-            "should_retry": True,
-            "initial_delay_seconds": 30,
-            "max_retries": 5,
-            "strategy": "exponential_backoff",
-            "reason": "Remitter bank temporarily unavailable — retry with backoff"
-        },
-        ErrorClass.BENEFICIARY_BANK_DOWN.value: {
-            "should_retry": True,
-            "initial_delay_seconds": 60,
-            "max_retries": 3,
-            "strategy": "exponential_backoff",
-            "reason": "Beneficiary bank down — longer delay, fewer retries"
-        },
-        ErrorClass.ACCOUNT_ISSUE.value: {
-            "should_retry": False,
-            "initial_delay_seconds": 0,
-            "max_retries": 0,
-            "strategy": "no_retry",
-            "reason": "Account frozen or invalid — retrying won't help"
-        },
-        ErrorClass.LIMIT_EXCEEDED.value: {
-            "should_retry": True,
-            "initial_delay_seconds": 3600,
-            "max_retries": 2,
-            "strategy": "fixed_delay",
-            "reason": "Daily limit exceeded — retry after 1 hour"
-        },
-        ErrorClass.UNKNOWN.value: {
-            "should_retry": True,
-            "initial_delay_seconds": 120,
-            "max_retries": 2,
-            "strategy": "exponential_backoff",
-            "reason": "Unknown error — cautious retry"
-        },
+    """Uses the real retry scheduler with exponential backoff + jitter."""
+    delay       = get_retry_delay(error_class, attempt=0)
+    max_retries = get_max_retries(error_class)
+
+    return {
+        "should_retry":          delay is not None,
+        "initial_delay_seconds": delay or 0,
+        "max_retries":           max_retries,
+        "strategy":              "exponential_backoff_jitter" if delay else "no_retry",
+        "reason":                f"Delay: {delay}s | Max retries: {max_retries}"
     }
-    return strategies.get(error_class, strategies[ErrorClass.UNKNOWN.value])
 
 
 def process_event(entry_id: str, fields: dict, redis) -> bool:
-    payment_id   = fields.get("payment_id")
-    error_class  = fields.get("error_class")
-    upi_error    = fields.get("upi_error_code")
-    merchant     = fields.get("merchant_name")
-    amount       = fields.get("amount")
-    remitter     = fields.get("remitter_bank")
-    beneficiary  = fields.get("beneficiary_bank")
+    payment_id  = fields.get("payment_id")
+    error_class = fields.get("error_class")
+    upi_error   = fields.get("upi_error_code")
+    merchant    = fields.get("merchant_name")
+    amount      = fields.get("amount")
+    remitter    = fields.get("remitter_bank")
+    beneficiary = fields.get("beneficiary_bank")
 
     if not payment_id or not error_class:
         log.warning(f"Skipping malformed event {entry_id} — missing payment_id or error_class")
@@ -111,30 +88,33 @@ def process_event(entry_id: str, fields: dict, redis) -> bool:
     log.info(f"Strategy:          {strategy['strategy']}")
 
     if strategy["should_retry"]:
-        log.info(f"Retry in:          {strategy['initial_delay_seconds']}s")
+        log.info(f"First retry in:    {strategy['initial_delay_seconds']}s")
         log.info(f"Max retries:       {strategy['max_retries']}")
 
+        # Store retry plan in Redis
         retry_key = f"retry_plan:{payment_id}"
         redis.hset(retry_key, mapping={
             "payment_id":      payment_id,
             "strategy":        strategy["strategy"],
             "max_retries":     str(strategy["max_retries"]),
             "next_retry_in":   str(strategy["initial_delay_seconds"]),
-            "scheduled_at":    datetime.utcnow().isoformat(),
-            "error_class":     error_class
+            "scheduled_at":    datetime.now().isoformat(),
+            "error_class":     error_class,
+            "current_attempt": "0"
         })
         redis.expire(retry_key, 86400)
-        log.info(f"Retry plan stored in Redis: retry_plan:{payment_id[:8]}...")
+        log.info(f"Retry plan stored: retry_plan:{payment_id[:8]}...")
 
     else:
         log.info(f"ABANDONED:         Payment will not be retried")
 
+        # Mark as abandoned in Redis
         payment_key = f"payment:{payment_id}"
         data = redis.get(payment_key)
         if data:
             event_dict = json.loads(data)
             event_dict["status"] = PaymentStatus.ABANDONED.value
-            redis.setex(payment_key, 86400, json.dumps(event_dict))
+            redis.set(payment_key, json.dumps(event_dict), ex=86400)
 
     log.info(f"{'='*60}")
     return True
