@@ -11,6 +11,12 @@ from app.services.stream_service import (
     read_stream_events,
     get_stream_length
 )
+from app.services.timeline_service import (
+    get_timeline,
+    record_payment_failed,
+    record_retry_scheduled,
+    record_abandoned
+)
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -67,6 +73,50 @@ def get_stream_events(count: int = 10):
         "total_events_in_stream": stream_len,
         "fetched": len(events),
         "events": events
+    }
+
+
+@router.get("/{payment_id}/timeline")
+def get_payment_timeline(
+    payment_id: str,
+    redis=Depends(get_redis)
+):
+    """
+    Get the full retry timeline for a payment.
+    Shows every event: failure, retry scheduled, gateway switch, etc.
+    """
+    # Verify payment exists
+    payment_key = f"{PAYMENT_KEY_PREFIX}:{payment_id}"
+    data = redis.get(payment_key)
+
+    if not data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Payment {payment_id} not found"
+        )
+
+    event_dict = json.loads(data)
+    event = FailedPaymentEvent(**event_dict)
+    error_class = UPI_ERROR_CLASS_MAP.get(event.upi_error_code)
+
+    # Get timeline
+    timeline = get_timeline(payment_id)
+
+    # Get retry plan from Redis
+    retry_key = f"retry_plan:{payment_id}"
+    retry_plan = redis.hgetall(retry_key)
+
+    return {
+        "payment_id":     payment_id,
+        "merchant_name":  event.merchant_name,
+        "amount":         event.amount,
+        "upi_error_code": event.upi_error_code.value,
+        "error_class":    error_class.value,
+        "current_status": event.status.value,
+        "retry_count":    event.retry_count,
+        "timeline":       timeline,
+        "retry_plan":     retry_plan if retry_plan else None,
+        "total_events":   len(timeline)
     }
 
 

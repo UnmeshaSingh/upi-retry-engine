@@ -77,3 +77,25 @@ class PaymentEventResponse(BaseModel):
     retry_count:  int
     failed_at:    datetime
     message:      str
+
+
+class TimelineEventType(str, Enum):
+    PAYMENT_FAILED    = "PAYMENT_FAILED"
+    RETRY_SCHEDULED   = "RETRY_SCHEDULED"
+    RETRY_ATTEMPTED   = "RETRY_ATTEMPTED"
+    RETRY_SUCCEEDED   = "RETRY_SUCCEEDED"
+    RETRY_FAILED      = "RETRY_FAILED"
+    CIRCUIT_TRIPPED   = "CIRCUIT_TRIPPED"
+    GATEWAY_SWITCHED  = "GATEWAY_SWITCHED"
+    ABANDONED         = "ABANDONED"
+
+
+class TimelineEvent(BaseModel):
+    event_type:      TimelineEventType
+    timestamp:       datetime = Field(default_factory=datetime.utcnow)
+    gateway:         Optional[str] = None
+    circuit_state:   Optional[str] = None
+    delay_seconds:   Optional[float] = None
+    attempt_number:  Optional[int] = None
+    error_code:      Optional[str] = None
+    message:         str

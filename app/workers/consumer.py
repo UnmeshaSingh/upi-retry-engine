@@ -12,7 +12,16 @@ from app.models.payment import (
 from app.services.retry_scheduler import (
     get_retry_delay,
     get_max_retries,
+    build_full_retry_schedule
 )
+from app.services.timeline_service import (
+    record_payment_failed,
+    record_retry_scheduled,
+    record_gateway_switched,
+    record_abandoned
+)
+from app.services.circuit_breaker import get_circuit_state
+from app.services.routing_service import get_best_gateway
 
 # Setup logging
 logging.basicConfig(
@@ -70,7 +79,7 @@ def process_event(entry_id: str, fields: dict, redis) -> bool:
     beneficiary = fields.get("beneficiary_bank")
 
     if not payment_id or not error_class:
-        log.warning(f"Skipping malformed event {entry_id} — missing payment_id or error_class")
+        log.warning(f"Skipping malformed event {entry_id}")
         return True
 
     log.info(f"")
@@ -82,14 +91,56 @@ def process_event(entry_id: str, fields: dict, redis) -> bool:
     log.info(f"Error Class:       {error_class}")
     log.info(f"Banks:             {remitter} → {beneficiary}")
 
+    # Record initial failure in timeline
+    record_payment_failed(
+        payment_id=payment_id,
+        error_code=upi_error,
+        gateway=remitter,
+        merchant=merchant,
+        amount=float(amount)
+    )
+
     strategy = decide_retry_strategy(error_class)
 
     log.info(f"Decision:          {strategy['reason']}")
     log.info(f"Strategy:          {strategy['strategy']}")
 
     if strategy["should_retry"]:
+        # Get best available gateway
+        best_gateway = get_best_gateway(exclude_bank=remitter)
+        if not best_gateway:
+            best_gateway = remitter
+
+        # Check circuit breaker state
+        circuit_state = get_circuit_state(best_gateway)
+
+        # Build full retry schedule
+        schedule = build_full_retry_schedule(error_class)
+
+        log.info(f"Best gateway:      {best_gateway}")
+        log.info(f"Circuit state:     {circuit_state.value}")
         log.info(f"First retry in:    {strategy['initial_delay_seconds']}s")
         log.info(f"Max retries:       {strategy['max_retries']}")
+
+        # Record gateway switch if different from original
+        if best_gateway != remitter:
+            record_gateway_switched(
+                payment_id=payment_id,
+                from_gateway=remitter,
+                to_gateway=best_gateway,
+                reason=f"{remitter} was the failing gateway"
+            )
+
+        # Record each scheduled retry in timeline
+        for attempt in schedule:
+            record_retry_scheduled(
+                payment_id=payment_id,
+                attempt=attempt["attempt"],
+                delay_seconds=attempt["delay_seconds"],
+                gateway=best_gateway,
+                circuit_state=circuit_state.value,
+                retry_at=attempt["retry_at"]
+            )
 
         # Store retry plan in Redis
         retry_key = f"retry_plan:{payment_id}"
@@ -100,13 +151,20 @@ def process_event(entry_id: str, fields: dict, redis) -> bool:
             "next_retry_in":   str(strategy["initial_delay_seconds"]),
             "scheduled_at":    datetime.now().isoformat(),
             "error_class":     error_class,
-            "current_attempt": "0"
+            "current_attempt": "0",
+            "gateway":         best_gateway
         })
         redis.expire(retry_key, 86400)
         log.info(f"Retry plan stored: retry_plan:{payment_id[:8]}...")
 
     else:
         log.info(f"ABANDONED:         Payment will not be retried")
+
+        # Record abandonment in timeline
+        record_abandoned(
+            payment_id=payment_id,
+            reason=f"Error class {error_class} is not retriable"
+        )
 
         # Mark as abandoned in Redis
         payment_key = f"payment:{payment_id}"
