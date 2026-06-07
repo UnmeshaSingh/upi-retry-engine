@@ -1,7 +1,7 @@
 import json
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from app.core.redis_client import get_redis
 from app.models.payment import (
     FailedPaymentEvent,
@@ -22,6 +22,11 @@ from app.services.timeline_service import (
 )
 from app.services.circuit_breaker import get_circuit_state
 from app.services.routing_service import get_best_gateway
+from app.services.merchant_service import (
+    get_sla_status,
+    get_retry_priority_score,
+    store_sla_breach
+)
 
 # Setup logging
 logging.basicConfig(
@@ -32,11 +37,11 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # Stream and group config
-PAYMENTS_STREAM  = "payments_stream"
-CONSUMER_GROUP   = "retry_workers"
-CONSUMER_NAME    = "worker_1"
-BATCH_SIZE       = 10
-BLOCK_MS         = 2000
+PAYMENTS_STREAM = "payments_stream"
+CONSUMER_GROUP  = "retry_workers"
+CONSUMER_NAME   = "worker_1"
+BATCH_SIZE      = 10
+BLOCK_MS        = 2000
 
 
 def ensure_consumer_group(redis):
@@ -77,6 +82,7 @@ def process_event(entry_id: str, fields: dict, redis) -> bool:
     amount      = fields.get("amount")
     remitter    = fields.get("remitter_bank")
     beneficiary = fields.get("beneficiary_bank")
+    merchant_id = fields.get("merchant_id", "default")
 
     if not payment_id or not error_class:
         log.warning(f"Skipping malformed event {entry_id}")
@@ -85,7 +91,7 @@ def process_event(entry_id: str, fields: dict, redis) -> bool:
     log.info(f"")
     log.info(f"{'='*60}")
     log.info(f"Processing payment: {payment_id[:8]}...")
-    log.info(f"Merchant:          {merchant}")
+    log.info(f"Merchant:          {merchant} ({merchant_id})")
     log.info(f"Amount:            ₹{amount}")
     log.info(f"UPI Error:         {upi_error}")
     log.info(f"Error Class:       {error_class}")
@@ -100,6 +106,32 @@ def process_event(entry_id: str, fields: dict, redis) -> bool:
         amount=float(amount)
     )
 
+    # ── SLA Check ─────────────────────────────────────────────────────────────
+    try:
+        failed_at_str = fields.get("failed_at", datetime.now().isoformat())
+        failed_at_dt  = datetime.fromisoformat(failed_at_str).replace(
+            tzinfo=timezone.utc
+        )
+    except Exception:
+        failed_at_dt = datetime.now(timezone.utc)
+
+    sla_status     = get_sla_status(merchant_id, failed_at_dt)
+    priority_score = get_retry_priority_score(merchant_id, failed_at_dt)
+
+    log.info(f"SLA:               {sla_status['elapsed_seconds']}s elapsed "
+             f"/ {sla_status['sla_seconds']}s limit")
+    log.info(f"SLA Urgency:       {sla_status['urgency']}")
+    log.info(f"Priority Score:    {priority_score}")
+
+    if sla_status["breached"]:
+        log.warning(
+            f"SLA BREACHED:      {merchant} exceeded "
+            f"{sla_status['sla_seconds']}s SLA — "
+            f"action: {sla_status['breach_action']}"
+        )
+        store_sla_breach(payment_id, merchant_id)
+
+    # ── Retry Decision ────────────────────────────────────────────────────────
     strategy = decide_retry_strategy(error_class)
 
     log.info(f"Decision:          {strategy['reason']}")
@@ -152,7 +184,9 @@ def process_event(entry_id: str, fields: dict, redis) -> bool:
             "scheduled_at":    datetime.now().isoformat(),
             "error_class":     error_class,
             "current_attempt": "0",
-            "gateway":         best_gateway
+            "gateway":         best_gateway,
+            "priority_score":  str(priority_score),
+            "sla_urgency":     sla_status["urgency"]
         })
         redis.expire(retry_key, 86400)
         log.info(f"Retry plan stored: retry_plan:{payment_id[:8]}...")

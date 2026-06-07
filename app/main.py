@@ -5,6 +5,7 @@ from app.api.payments import router as payments_router
 from app.api.retry import router as retry_router
 from app.api.routing import router as routing_router
 from app.api.circuit_breaker import router as circuit_breaker_router
+from app.api.merchants import router as merchants_router
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -16,6 +17,7 @@ app.include_router(payments_router)
 app.include_router(retry_router)
 app.include_router(routing_router)
 app.include_router(circuit_breaker_router)
+app.include_router(merchants_router)
 
 @app.get("/")
 def root():
