@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from app.core.config import settings
 from app.core.redis_client import check_redis_connection
+from app.core.database import init_db
 from app.api.payments import router as payments_router
 from app.api.retry import router as retry_router
 from app.api.routing import router as routing_router
@@ -12,6 +13,11 @@ app = FastAPI(
     version=settings.APP_VERSION,
     description="UPI-aware payment retry orchestration engine"
 )
+
+@app.on_event("startup")
+def startup():
+    """Initialize database tables on startup."""
+    init_db()
 
 app.include_router(payments_router)
 app.include_router(retry_router)
