@@ -1,0 +1,98 @@
+version: "3.9"
+
+services:
+
+  # ── FastAPI App ──────────────────────────────────────────────
+  app:
+    build: .
+    container_name: upi_retry_app
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=upi_retry_db
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    restart: unless-stopped
+    networks:
+      - upi_network
+
+  # ── Redis ────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: upi_retry_redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - upi_network
+
+  # ── PostgreSQL ───────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: upi_retry_postgres
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_DB=upi_retry_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - upi_network
+
+  # ── Consumer Worker ──────────────────────────────────────────
+  worker:
+    build: .
+    container_name: upi_retry_worker
+    command: python -m app.workers.consumer
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=upi_retry_db
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    restart: unless-stopped
+    networks:
+      - upi_network
+
+volumes:
+  redis_data:
+  postgres_data:
+
+networks:
+  upi_network:
+    driver: bridge
