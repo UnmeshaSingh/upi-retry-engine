@@ -45,49 +45,24 @@ This engine solves all three.
 
 ## Architecture
 
-┌─────────────────────────────────────────────────────────┐
-│                    POST /payments/fail                   │
-└─────────────────────┬───────────────────────────────────┘
-│
-▼
-┌───────────────┐
-│  FastAPI App  │
-└──────┬────────┘
-│
-┌────────────┼────────────┐
-▼            ▼            ▼
-┌─────────┐  ┌──────────┐  ┌──────────────┐
-│  Redis  │  │PostgreSQL│  │ Redis Stream │
-│  Store  │  │  Audit   │  │   (Queue)    │
-└─────────┘  └──────────┘  └──────┬───────┘
-│
-▼
-┌─────────────────┐
-│ Consumer Worker │
-└────────┬────────┘
-│
-┌───────────────────────┼───────────────────────┐
-▼                       ▼                       ▼
-┌──────────────────┐   ┌───────────────────┐   ┌──────────────────┐
-│ UPI Error Class  │   │  Circuit Breaker  │   │ Gateway Routing  │
-│ + SLA Scoring    │   │  CLOSED/OPEN/HALF │   │ Auto-failover    │
-└──────────────────┘   └───────────────────┘   └──────────────────┘
-│                       │                       │
-└───────────────────────┼───────────────────────┘
-▼
-┌───────────────────────┐
-│  Exponential Backoff  │
-│  + Jitter Scheduler   │
-└───────────┬───────────┘
-│
-▼
-┌───────────────────────┐
-│   Timeline Events     │
-│   Recorded in Redis   │
-└───────────────────────┘
-│
-▼
-GET /payments/{id}/timeline
+**Request Flow:**
+POST /payments/fail
+→ FastAPI App
+→ Redis (24hr TTL) + PostgreSQL (permanent) + Redis Stream
+→ Consumer Worker
+→ UPI Error Classification (U69, Z9, U30...)
+→ Merchant SLA Priority Scoring
+→ Circuit Breaker Check (CLOSED / OPEN / HALF_OPEN)
+→ Gateway Routing (best available PSP)
+→ Exponential Backoff + Full Jitter Scheduling
+→ Timeline Events Recorded
+→ GET /payments/{id}/timeline
+
+**Storage Architecture:**
+- **Redis** — hot path, sub-millisecond reads, 24hr TTL
+- **PostgreSQL** — permanent audit log, historical queries
+- **Redis Streams** — event queue, consumer group delivery
+- **Redis Lists** — per-payment timeline (ordered events)
 
 ---
 
