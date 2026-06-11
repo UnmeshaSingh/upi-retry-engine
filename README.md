@@ -45,26 +45,49 @@ This engine solves all three.
 
 ## Architecture
 
-POST /payments/fail
+┌─────────────────────────────────────────────────────────┐
+│                    POST /payments/fail                   │
+└─────────────────────┬───────────────────────────────────┘
 │
 ▼
-FastAPI App ──────────────────────────────────────────┐
-│                                                 │
-├─► Redis (payment store, 24hr TTL)               │
-├─► PostgreSQL (permanent audit log)              │
-└─► Redis Stream (payments_stream)                │
-│                                     │
-▼                                     │
-Consumer Worker                               │
-│                                     │
-├─► UPI Error Classification          │
-├─► SLA Priority Scoring              │
-├─► Circuit Breaker Check             │
-├─► Gateway Routing (best available)  │
-├─► Exponential Backoff + Jitter      │
-└─► Timeline Event Recording          │
+┌───────────────┐
+│  FastAPI App  │
+└──────┬────────┘
 │
-GET /payments/{id}/timeline ◄──────────────────────────┘
+┌────────────┼────────────┐
+▼            ▼            ▼
+┌─────────┐  ┌──────────┐  ┌──────────────┐
+│  Redis  │  │PostgreSQL│  │ Redis Stream │
+│  Store  │  │  Audit   │  │   (Queue)    │
+└─────────┘  └──────────┘  └──────┬───────┘
+│
+▼
+┌─────────────────┐
+│ Consumer Worker │
+└────────┬────────┘
+│
+┌───────────────────────┼───────────────────────┐
+▼                       ▼                       ▼
+┌──────────────────┐   ┌───────────────────┐   ┌──────────────────┐
+│ UPI Error Class  │   │  Circuit Breaker  │   │ Gateway Routing  │
+│ + SLA Scoring    │   │  CLOSED/OPEN/HALF │   │ Auto-failover    │
+└──────────────────┘   └───────────────────┘   └──────────────────┘
+│                       │                       │
+└───────────────────────┼───────────────────────┘
+▼
+┌───────────────────────┐
+│  Exponential Backoff  │
+│  + Jitter Scheduler   │
+└───────────┬───────────┘
+│
+▼
+┌───────────────────────┐
+│   Timeline Events     │
+│   Recorded in Redis   │
+└───────────────────────┘
+│
+▼
+GET /payments/{id}/timeline
 
 ---
 
