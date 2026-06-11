@@ -8,6 +8,7 @@ from app.api.routing import router as routing_router
 from app.api.circuit_breaker import router as circuit_breaker_router
 from app.api.merchants import router as merchants_router
 from app.api.simulator import router as simulator_router
+from app.api.dashboard import router as dashboard_router
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -25,6 +26,7 @@ app.include_router(routing_router)
 app.include_router(circuit_breaker_router)
 app.include_router(merchants_router)
 app.include_router(simulator_router)
+app.include_router(dashboard_router)
 
 @app.get("/")
 def root():

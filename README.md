@@ -24,6 +24,19 @@ jitter, and schedules intelligent retries — all within milliseconds.
 Load tested with Locust across a mixed workload: payment failures, 
 timeline reads, circuit breaker checks, and gateway routing queries.
 
+## Live Dashboard
+
+The system includes a real-time admin dashboard at `/dashboard`
+showing gateway health, circuit breaker states, stream queue depth,
+and peak hour spike detection — auto-refreshes every 5 seconds.
+
+Features:
+- Color-coded circuit breaker states (CLOSED/OPEN/HALF_OPEN) per gateway
+- Live gateway health with success rates
+- Failure spike detection banner with throttle status
+- Stream queue depth and active retry plan counts
+- System metrics — peak hour status, retry probability, SLA breaches
+
 ---
 
 ## The Problem
