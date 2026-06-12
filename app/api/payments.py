@@ -39,21 +39,40 @@ def report_failed_payment(
 ):
     """
     Accepts a failed UPI payment event.
-    1. Stores it in Redis with TTL
-    2. Pushes it into Redis Stream for retry processing
-    3. Saves permanently to PostgreSQL
+    Hot path:   Redis store + Stream push (sub-millisecond)
+    Async path: PostgreSQL write via Celery (non-blocking)
     """
     error_class = UPI_ERROR_CLASS_MAP.get(event.upi_error_code)
 
-    # Store in Redis
+    # ── HOT PATH (synchronous, must be fast) ──────────────────────
+    # 1. Store in Redis
     redis_key = f"{PAYMENT_KEY_PREFIX}:{event.payment_id}"
     redis.setex(redis_key, PAYMENT_TTL_SECONDS, event.model_dump_json())
 
-    # Push to stream
+    # 2. Push to stream
     stream_entry_id = push_to_stream(event)
 
-    # Save to PostgreSQL
-    save_payment_to_db(event, db)
+    # ── ASYNC PATH (non-blocking, PostgreSQL) ─────────────────────
+    # 3. Enqueue DB write as Celery task
+    try:
+        from app.tasks.db_tasks import save_payment_async
+        save_payment_async.delay({
+            "payment_id":       event.payment_id,
+            "amount":           event.amount,
+            "upi_error_code":   event.upi_error_code.value,
+            "error_class":      error_class.value,
+            "remitter_bank":    event.remitter_bank,
+            "beneficiary_bank": event.beneficiary_bank,
+            "merchant_id":      event.merchant_id,
+            "merchant_name":    event.merchant_name,
+            "upi_id":           event.upi_id,
+            "failed_at":        event.failed_at.isoformat()
+        })
+        db_write = "async"
+    except Exception:
+        # Celery unavailable — fall back to sync write
+        save_payment_to_db(event, db)
+        db_write = "sync_fallback"
 
     return PaymentEventResponse(
         payment_id=event.payment_id,
@@ -64,7 +83,7 @@ def report_failed_payment(
         merchant_name=event.merchant_name,
         retry_count=event.retry_count,
         failed_at=event.failed_at,
-        message=f"Payment stored in Redis + PostgreSQL, queued in stream (entry: {stream_entry_id}). Error class: {error_class.value}."
+        message=f"Payment queued (stream: {stream_entry_id}, db_write: {db_write}). Error: {error_class.value}."
     )
 
 
