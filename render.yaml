@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: upi-retry-engine
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: REDIS_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_NAME
+        value: UPI Retry Engine
+      - key: APP_VERSION
+        value: "0.1.0"
+      - key: DEBUG
+        value: "false"
