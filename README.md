@@ -11,7 +11,12 @@
 | ℹ️ System Info | [/info](https://upi-retry-engine.onrender.com/info) |
 | ❤️ Health Check | [/health](https://upi-retry-engine.onrender.com/health) |
 
-A production-grade payment retry orchestration engine built around real UPI failure taxonomy. When a payment fails, the engine classifies the error using NPCI error codes, selects the best available gateway, checks circuit breaker state, applies exponential backoff with full jitter, and schedules intelligent retries — all within milliseconds.
+=======
+A production-grade payment retry orchestration engine built around 
+real UPI failure taxonomy. When a payment fails, the engine classifies 
+the error using NPCI error codes, selects the best available gateway, 
+checks circuit breaker state, applies exponential backoff with full 
+jitter, and schedules intelligent retries — all within milliseconds.
 
 ---
 
